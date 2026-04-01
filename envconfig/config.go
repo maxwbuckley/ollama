@@ -236,6 +236,8 @@ var (
 	EnableVulkan = Bool("OLLAMA_VULKAN")
 	// NoCloudEnv checks the OLLAMA_NO_CLOUD environment variable.
 	NoCloudEnv = Bool("OLLAMA_NO_CLOUD")
+	// GpuDirectStorage enables NVIDIA GPU Direct Storage for faster model loading on Linux+CUDA+NVMe.
+	GpuDirectStorage = Bool("OLLAMA_GPU_DIRECT_STORAGE")
 )
 
 func String(s string) func() string {

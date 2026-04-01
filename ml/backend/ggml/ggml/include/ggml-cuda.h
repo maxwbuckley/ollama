@@ -42,6 +42,34 @@ GGML_BACKEND_API void ggml_backend_cuda_unregister_host_buffer(void * buffer);
 
 GGML_BACKEND_API ggml_backend_reg_t ggml_backend_cuda_reg(void);
 
+// check if a buffer is a CUDA device buffer (not split, not host)
+GGML_BACKEND_API bool ggml_backend_buffer_is_cuda_device(ggml_backend_buffer_t buffer);
+
+// get the CUDA device ordinal for a CUDA device buffer (-1 if not a CUDA buffer)
+GGML_BACKEND_API int ggml_backend_cuda_buffer_get_device(ggml_backend_buffer_t buffer);
+
+// GPU Direct Storage (GDS) -- direct NVMe-to-GPU DMA transfers (Linux + NVIDIA only)
+#ifdef GGML_CUDA_USE_GDS
+
+#include <sys/types.h>
+
+// opaque GDS file handle
+typedef void * ggml_cuda_gds_file_handle_t;
+
+// minimum tensor size to use GDS (avoids setup overhead for small tensors)
+#define GGML_CUDA_GDS_MIN_TRANSFER_SIZE 65536
+
+GGML_BACKEND_API bool                       ggml_cuda_gds_init(void);
+GGML_BACKEND_API void                       ggml_cuda_gds_shutdown(void);
+GGML_BACKEND_API bool                       ggml_cuda_gds_available(void);
+GGML_BACKEND_API ggml_cuda_gds_file_handle_t ggml_cuda_gds_register_file(int fd);
+GGML_BACKEND_API void                       ggml_cuda_gds_deregister_file(ggml_cuda_gds_file_handle_t handle);
+GGML_BACKEND_API int                        ggml_cuda_gds_register_buffer(void * dev_ptr, size_t size);
+GGML_BACKEND_API void                       ggml_cuda_gds_deregister_buffer(void * dev_ptr);
+GGML_BACKEND_API ssize_t                    ggml_cuda_gds_read(ggml_cuda_gds_file_handle_t handle, void * dev_ptr, size_t size, off_t file_offset, int device);
+
+#endif // GGML_CUDA_USE_GDS
+
 #ifdef  __cplusplus
 }
 #endif

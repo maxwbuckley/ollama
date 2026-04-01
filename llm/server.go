@@ -695,6 +695,12 @@ func (s *llamaServer) Load(ctx context.Context, systemInfo ml.SystemInfo, system
 		s.loadRequest.UseMmap = false
 	}
 
+	// GPU Direct Storage requires mmap to be disabled so the GDS code path activates
+	if runtime.GOOS == "linux" && len(gpus) > 0 && gpus[0].Library == "CUDA" && envconfig.GpuDirectStorage() {
+		s.loadRequest.UseMmap = false
+		slog.Info("GPU Direct Storage requested, disabling mmap for direct NVMe-to-GPU transfers")
+	}
+
 	if err := s.waitUntilRunnerLaunched(ctx); err != nil {
 		return nil, err
 	}

@@ -97,6 +97,18 @@ if (CUDAToolkit_FOUND)
         add_compile_definitions(GGML_CUDA_NO_PEER_COPY)
     endif()
 
+    if (GGML_CUDA_GDS)
+        if (NOT WIN32 AND NOT GGML_USE_HIP AND NOT GGML_USE_MUSA)
+            add_compile_definitions(GGML_CUDA_USE_GDS)
+            # cuFile types are defined locally in gds.cu to avoid requiring the GDS SDK
+            # at build time. We only need dlopen/dlsym at runtime.
+            target_link_libraries(ggml-cuda PRIVATE ${CMAKE_DL_LIBS})
+            message(STATUS "GPU Direct Storage (GDS) support enabled")
+        else()
+            message(WARNING "GGML_CUDA_GDS is only supported on Linux with NVIDIA CUDA (not HIP/MUSA/Windows)")
+        endif()
+    endif()
+
     if (GGML_STATIC)
         if (WIN32)
             # As of 12.3.1 CUDA Toolkit for Windows does not offer a static cublas library

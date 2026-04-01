@@ -2,6 +2,10 @@
 
 #include "ggml.h"
 
+#ifdef GGML_CUDA_USE_GDS
+#include "ggml-cuda.h"
+#endif
+
 #include <array>
 #include <cinttypes>
 #include <cstring>
@@ -1021,6 +1025,53 @@ bool llama_model_loader::load_all_data(
             ggml_backend_name(upload_backend));
     }
 
+#ifdef GGML_CUDA_USE_GDS
+    // GPU Direct Storage: attempt to set up direct NVMe-to-GPU DMA transfers.
+    // Only activates when: not using mmap, not validating tensors, and target is a CUDA device buffer.
+    bool use_gds = false;
+    int gds_device = -1;
+    std::vector<ggml_cuda_gds_file_handle_t> gds_file_handles;
+
+    if (!use_mmap && !check_tensors) {
+        auto * buf = bufs.count(0) ? bufs.at(0) : nullptr;
+        if (buf && ggml_backend_buffer_is_cuda_device(buf)) {
+            gds_device = ggml_backend_cuda_buffer_get_device(buf);
+            if (gds_device >= 0 && ggml_cuda_gds_init() && ggml_cuda_gds_available()) {
+                // Register all GGUF file descriptors with GDS
+                gds_file_handles.resize(files.size(), nullptr);
+                bool all_registered = true;
+                for (size_t i = 0; i < files.size(); i++) {
+                    gds_file_handles[i] = ggml_cuda_gds_register_file(files[i]->file_id());
+                    if (!gds_file_handles[i]) {
+                        all_registered = false;
+                        break;
+                    }
+                }
+
+                if (all_registered) {
+                    // Register GPU buffer regions for GDS DMA
+                    for (auto & [idx, b] : bufs) {
+                        if (ggml_backend_buffer_is_cuda_device(b)) {
+                            void * base = ggml_backend_buffer_get_base(b);
+                            size_t sz   = ggml_backend_buffer_get_size(b);
+                            ggml_cuda_gds_register_buffer(base, sz);
+                        }
+                    }
+                    use_gds = true;
+                    LLAMA_LOG_INFO("%s: using GPU Direct Storage for model loading\n", __func__);
+                } else {
+                    // Clean up partial file registrations
+                    for (auto h : gds_file_handles) {
+                        if (h) { ggml_cuda_gds_deregister_file(h); }
+                    }
+                    gds_file_handles.clear();
+                    LLAMA_LOG_DEBUG("%s: GDS file registration failed, falling back to standard loading\n", __func__);
+                }
+            }
+        }
+    }
+#endif // GGML_CUDA_USE_GDS
+
     for (struct ggml_tensor * cur = ggml_get_first_tensor(ctx); cur != NULL; cur = ggml_get_next_tensor(ctx, cur)) {
         const auto * weight = get_weight(ggml_get_name(cur));
         if (weight == nullptr) {
@@ -1075,6 +1126,26 @@ bool llama_model_loader::load_all_data(
                     }));
                 }
             } else {
+#ifdef GGML_CUDA_USE_GDS
+                // GDS fast path: read directly from NVMe into GPU memory via DMA
+                bool gds_ok = false;
+                if (use_gds && n_size >= GGML_CUDA_GDS_MIN_TRANSFER_SIZE &&
+                    weight->idx < gds_file_handles.size() && gds_file_handles[weight->idx]) {
+                    ssize_t bytes = ggml_cuda_gds_read(
+                        gds_file_handles[weight->idx],
+                        cur->data,
+                        n_size,
+                        (off_t)weight->offs,
+                        gds_device);
+                    if (bytes >= 0 && (size_t)bytes == n_size) {
+                        gds_ok = true;
+                    } else {
+                        LLAMA_LOG_WARN("%s: GDS read failed for tensor '%s' (got %zd, expected %zu), falling back\n",
+                            __func__, ggml_get_name(cur), bytes, n_size);
+                    }
+                }
+                if (!gds_ok)
+#endif // GGML_CUDA_USE_GDS
                 // If upload_backend is valid load the tensor in chunks to pinned memory and upload the buffers asynchronously to the GPU.
                 if (upload_backend) {
                     file->seek(weight->offs, SEEK_SET);
@@ -1107,6 +1178,20 @@ bool llama_model_loader::load_all_data(
 
         size_done += n_size;
     }
+
+#ifdef GGML_CUDA_USE_GDS
+    // Clean up GDS registrations
+    if (use_gds) {
+        for (auto & [idx, b] : bufs) {
+            if (ggml_backend_buffer_is_cuda_device(b)) {
+                ggml_cuda_gds_deregister_buffer(ggml_backend_buffer_get_base(b));
+            }
+        }
+        for (auto h : gds_file_handles) {
+            ggml_cuda_gds_deregister_file(h);
+        }
+    }
+#endif // GGML_CUDA_USE_GDS
 
     // free temporary resources used for async uploads
     for (auto * event : events) {
